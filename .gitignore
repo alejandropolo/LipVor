@@ -1,6 +1,7 @@
 
-# Ignore the figures directory
-figures/
+# Ignore the Figures directory but LipVor_exec_example.png
+Figures/*
+!Figures/LipVor_exec_example.png
 
 # Ignore the data directory
 Data/
