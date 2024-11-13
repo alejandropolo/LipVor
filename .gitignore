@@ -1,0 +1,15 @@
+
+# Ignore the figures directory
+figures/
+
+# Ignore the data directory
+Data/
+
+# Ignore logs directory
+logs/
+
+# Ignore python cache files
+__pycache__/
+
+# Ignore models from Notebooks/Models/ that start wiht "checkpoint"
+Notebooks/Models/checkpoint*
