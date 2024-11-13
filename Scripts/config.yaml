@@ -1,0 +1,37 @@
+data_load:
+  n_samples: 8
+  noise_constant: 0.05
+  x_lim:
+  - 0
+  - 1
+  y_lim:
+  - 0
+  - 1.0
+model_architecture:
+  actfunc:
+  - tanh
+  batch_size: null
+  layers:
+  - 2
+  - 10
+  - 1
+training:
+  delta: 0.1
+  delta_external: 0.0
+  delta_synthetic: 0.0
+  epsilon_synthetic: 0.0
+  epsilon: 0.1
+  learning_rate: 0.01
+  monotone_relations:
+  - 1
+  - 0
+  n_epochs: 5000
+  patience: 1000
+  plot_history: True
+  save_model: True
+  early_stopping: True
+  std_growth: 0.0
+  verbose: 1
+  weight_decay: 0.0e-5
+  seed: 0
+  optimizer_type: 'LBFGS'
