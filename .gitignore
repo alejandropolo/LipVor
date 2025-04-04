@@ -6,11 +6,17 @@ Figures/*
 # Ignore the data directory
 Data/
 
-# Ignore logs directory
-logs/
+# Ignore logs directory but error_log_heat.csv and error_log_ESL.csv
+logs/*
+!logs/errors_log_heat.csv
+!logs/errors_log_ESL.csv
 
 # Ignore python cache files
 __pycache__/
 
 # Ignore models from Notebooks/Models/ that start wiht "checkpoint"
 Notebooks/Models/checkpoint*
+
+# Ignore Notebooks_backup directory
+Notebook_backup/
+Scripts_backup/
