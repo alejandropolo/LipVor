@@ -88,7 +88,7 @@ class MonoNN:
     def train(self, train_data, val_data, criterion, n_epochs, categorical_columns=[None], verbose=1, n_visualized=1,
               monotone_relations=[0], optimizer_type='Adam', learning_rate=0.01, delta=0.0, weight_decay=0.0, delta_synthetic=0.0, delta_external=0.0,
               patience=100, model_path='./Models/checkpoint_', std_syntethic=0.0, std_growth=0.0, epsilon=0.0,
-              epsilon_synthetic=0.0, external_points=None, seed=None, keep_model=True, _early_stopping=True):
+              epsilon_synthetic=0.0, external_points=None, seed=None, keep_model=True, _early_stopping=True, delta_early_stopping = 0.0):
         """
         Train the neural network model with adjusted standard deviation.
     
@@ -139,7 +139,7 @@ class MonoNN:
             os.makedirs(data_folder, exist_ok=True)
             model_path_timestamp = Utilities.add_timestamp(model_path)
             path = model_path_timestamp + '.pt'
-            early_stopping = EarlyStopping(path=path, patience=patience, verbose=False)
+            early_stopping = EarlyStopping(path=path, patience=patience, delta=delta_early_stopping, verbose=False)
     
         if optimizer_type == 'SGD':
             optimizer = SGD(self._model.parameters(), lr=learning_rate, momentum=0.9)
