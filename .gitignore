@@ -20,3 +20,6 @@ Notebooks/Models/checkpoint*
 # Ignore Notebooks_backup directory
 Notebook_backup/
 Scripts_backup/
+
+# Ignore Results directory
+Results/
