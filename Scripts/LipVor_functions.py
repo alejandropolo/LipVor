@@ -7,11 +7,25 @@ from scipy.spatial import Voronoi, voronoi_plot_2d
 from shapely.geometry import Polygon, Point
 from matplotlib.patches import Circle
 import plotly.graph_objects as go
-import torch
 from tqdm import tqdm
 from neuralsens import partial_derivatives as ns
 from neuralsens.partial_derivatives import calculate_second_partial_derivatives_mlp,calculate_first_partial_derivatives_mlp
 from scipy.spatial import ConvexHull
+
+
+
+
+# Load Julia
+try:
+    from juliacall import Main as jl
+    jl.include("../Scripts//JuliaSrc/VorFunctions.jl")
+except:
+    import warnings
+    warnings.warn("Julia could not be loaded. Julia options will not be available.", RuntimeWarning)
+
+import torch
+
+
 
 ###############################################################################################
 ########################################## FUNCTIONS ##########################################
@@ -352,11 +366,11 @@ def check_space_filled_vectorized(vor, dict_radios, vertices):
         region_idx = vor.point_region[i]
         if is_inside_hypercube(point, vertices):
             # Check that the distance is going to be calculated for the correct point
-            point_radio = np.array(ast.literal_eval(list(dict_radios.keys())[j]), dtype=np.float32)
-            if not np.allclose(point, point_radio, atol=1e-8):
-                print('Point from voronoi set: ', point)
-                print('Point from dict_radios: ', point_radio)
-                raise ValueError('The points are not the same, and therefore the radius is not the correct one')
+            # point_radio = np.array(ast.literal_eval(list(dict_radios.keys())[j]), dtype=np.float32)
+            # if not np.allclose(point, point_radio, atol=1e-8):
+            #     print('Point from voronoi set: ', point)
+            #     print('Point from dict_radios: ', point_radio)
+            #     raise ValueError('The points are not the same, and therefore the radius is not the correct one')
             region_vertices = vor.vertices[vor.regions[region_idx]]
             # Find the furthest vertex from the point
             furthest_vertex = region_vertices[np.argmax(np.linalg.norm(region_vertices - point, axis=1))]
@@ -585,8 +599,8 @@ def add_new_point_vectorized(finite_vor, vertices, distances, dict_radios, proba
             ## Extract the point and the region index
             point = finite_vor.points[indices_inside[i]]
             ## Check that the radio matches the point
-            point_radio = np.array(ast.literal_eval(list(dict_radios.keys())[i]),dtype=np.float32)
-            assert np.allclose(point, point_radio, atol=1e-8), "The points are not the same, and therefore the radio is not the correct one"
+            # point_radio = np.array(ast.literal_eval(list(dict_radios.keys())[i]),dtype=np.float32)
+            # assert np.allclose(point, point_radio, atol=1e-8), "The points are not the same, and therefore the radio is not the correct one"
             
             ## Extract the region index and vertices for the point i
             region_idx = finite_vor.point_region[indices_inside[i]]
@@ -615,8 +629,8 @@ def add_new_point_vectorized(finite_vor, vertices, distances, dict_radios, proba
             ## Extract the point and the region index
             point = finite_vor.points[indices_inside[i]]
             ## Check that the radio matches the point
-            point_radio = np.array(ast.literal_eval(list(dict_radios.keys())[i]),dtype=np.float32)
-            assert np.allclose(point, point_radio, atol=1e-8), "The points are not the same, and therefore the radio is not the correct one"
+            # point_radio = np.array(ast.literal_eval(list(dict_radios.keys())[i]),dtype=np.float32)
+            # assert np.allclose(point, point_radio, atol=1e-8), "The points are not the same, and therefore the radio is not the correct one"
             
             ## Extract the region index and vertices for the point i
             region_idx = finite_vor.point_region[indices_inside[i]]
@@ -639,7 +653,7 @@ def add_new_point_vectorized(finite_vor, vertices, distances, dict_radios, proba
 
 def LipVor(original_vor, original_points, finite_vor, dict_radios, vertices, distances, 
                           model,actfunc, global_lipschitz_constant, intervals,monotone_relations,variable_index,
-                          n_variables, epsilon_derivative, probability, mode='neuralsens',plot_voronoi=False, epsilon=1e-5, max_iterations=10):
+                          n_variables, epsilon_derivative, probability, mode='neuralsens',plot_voronoi=False, epsilon=1e-5, max_iterations=10, verbose=0):
     """
     Add points to a Voronoi diagram using the furthest vertex for each point.
 
@@ -670,30 +684,37 @@ def LipVor(original_vor, original_points, finite_vor, dict_radios, vertices, dis
     warning = False
     
     if mode == 'neuralsens':
-        print('Using NeuralSens')
+    #     # print('Using NeuralSens')
         weights, biases = get_weights_and_biases(model)
     elif mode == 'autograd':
         print('Using autograd')
     else:
         raise ValueError('The mode must be either autograd or neuralsens')
     
-    pbar = tqdm(range(max_iterations), desc="Processing iterations")
-    for i in pbar:
-        ## Set description of the pbar
-        pbar.set_description("Processing iteration {}".format(i+1))
+    iteration_range = range(max_iterations)
+    if verbose:
+        iteration_range = tqdm(iteration_range, desc="Processing iterations")
+    
+    for i in iteration_range:
+        if verbose:
+            ## Set description of the pbar
+            iteration_range.set_description("Processing iteration {} with intervals defining the space: {}".format(i+1, intervals))
+        
         ## Add new point
         selected_vertex,volume_covered,vertex_covered_count = add_new_point_vectorized(finite_vor=finite_vor, vertices=vertices, distances=distances, dict_radios=dict_radios,probability=probability)
-        ## Show in the pbar the number of vertex covered out of the total number of vertices
-        percentage_covered = (vertex_covered_count / len(distances)) * 100
-        percentage_volume_covered = (volume_covered / compute_polytope_volume(vertices_extended)) * 100
-        pbar.set_postfix({'Percentage of vertex covered': f'{percentage_covered:.2f}%', 'Percentage of Volume Verified': f'{percentage_volume_covered:.2f}%'})
+        
+        if verbose:
+            ## Show in the pbar the number of vertex covered out of the total number of vertices
+            percentage_covered = (vertex_covered_count / len(distances)) * 100
+            percentage_volume_covered = (volume_covered / compute_polytope_volume(vertices_extended)) * 100
+            iteration_range.set_postfix({'Percentage of vertex covered': f'{percentage_covered:.2f}%', 'Percentage of Volume Verified': f'{percentage_volume_covered:.2f}%'})
         
         ## Project the new point to the hypercube (because of the extension it may be outside the hypercube)
         selected_vertex = proyection_hypercube(selected_vertex, vertices)
 
         ## Checks if selected vertex is already in the original points
         ## In that case the loop has to stop because the dictionary cannot have two arrays with the same key
-        if np.any(np.all(np.isclose(original_points, selected_vertex,rtol=1e-07), axis=1)):
+        if np.any(np.all(np.isclose(original_points, selected_vertex,rtol=1e-05), axis=1)):
             print('The selected vertex is already in the original points and the vertex is {}'.format(selected_vertex))
             break
         else:
@@ -702,11 +723,14 @@ def LipVor(original_vor, original_points, finite_vor, dict_radios, vertices, dis
         ## Add the new point to the inputs
         inputs = torch.tensor(original_points, dtype=torch.float)
         
-        ## Add the new point to the Voronoi diagram
+        # # Add the new point to the Voronoi diagram
         original_vor.add_points(selected_vertex.reshape(1, -1))
-        ## Compute the new finite Voronoi diagram with the new point
+        # Compute the new finite Voronoi diagram with the new point
+        # FIXME: Corregir para que no se necesite utilizar el original_vor si no que se calculen los simétricos para todos los puntos
         all_points, _ = add_symmetric_points(original_vor, vertices_extended, intervals_extended)
         finite_vor = Voronoi(all_points, incremental=True)
+
+        finite_vor = Voronoi(all_points, incremental=True,qhull_options="Q12 QJ Qs Qc Qx")
         
         ## Compute the new radios for each point
         if mode=='autograd':
@@ -721,22 +745,159 @@ def LipVor(original_vor, original_points, finite_vor, dict_radios, vertices, dis
         derivative_sign = [v[1] for _, v in dict_radios.items()]
         ## Plot Voronoi diagram
         if plot_voronoi and len(intervals) == 2:
-            plot_finite_voronoi_2D(vor=finite_vor, all_points=all_points, original_points=original_points, radios=radius_tot, boundary=vertices, derivative_sign=derivative_sign, plot_symmetric_points=False)
+            plot_finite_voronoi_2D(vor=finite_vor, all_points=finite_vor.points, original_points=original_points, radios=radius_tot, boundary=vertices, derivative_sign=derivative_sign, plot_symmetric_points=False)
         ## Check if the space is filled
         space_filled, distances = check_space_filled_vectorized(finite_vor, dict_radios, vertices)
         ## Check if the space is filled and there are no points not satisfying the monotone relation
         if space_filled and no_points:
-            print('The space is filled: {} after {} iterations '.format(space_filled,i+1))
-            break
+            print('The space is filled: {} after {} iterations. Intervals that define the space: {}'.format(space_filled, i+1, intervals))
+            return space_filled, x_reentrenamiento
         elif x_reentrenamiento.shape[0]!=0 and not warning and not no_points:
             print('The retraining set is not empty and therefore the space cannot be filled')
             warning = True
 
     if len(intervals) == 2:
-        plot_finite_voronoi_2D(vor=finite_vor, all_points=all_points, original_points=original_points, radios=radius_tot, boundary=vertices, derivative_sign=derivative_sign, plot_symmetric_points=False)
+        plot_finite_voronoi_2D(vor=finite_vor, all_points=finite_vor.points, original_points=original_points, radios=radius_tot, boundary=vertices, derivative_sign=derivative_sign, plot_symmetric_points=False)
 
-    return x_reentrenamiento
+    return space_filled, x_reentrenamiento
 
+def LipVor_Julia(original_points, radius, distances, vertices,
+                          model,actfunc, global_lipschitz_constant, intervals,monotone_relations,variable_index,
+                          n_variables, epsilon_derivative, epsilon_proyection, probability, mode='neuralsens',plot_voronoi=False,
+                          n=1, max_iterations=10, verbose=0):
+
+   
+    ## Boolean warning to print if there are points not following the monotone relation
+    warning = False
+    
+    if mode == 'neuralsens':
+    #     # print('Using NeuralSens')
+        weights, biases = get_weights_and_biases(model)
+    elif mode == 'autograd':
+        print('Using autograd')
+    else:
+        raise ValueError('The mode must be either autograd or neuralsens')
+    
+    iteration_range = range(max_iterations)
+    if verbose:
+        iteration_range = tqdm(iteration_range, desc="Processing iterations")
+
+    # Compute the center as the mid point of the intervals
+    # center = np.mean(intervals, axis=1)
+    # # Compute the lenght of the inverval (Asumming cuboid domains)
+    # # l = float(np.abs(intervals[0][1]-intervals[0][0]))
+    # l = np.float64(np.abs(intervals[0][1] - intervals[0][0]))*(1+1e-4)
+    intervals_extended = [(x - epsilon_proyection, y + epsilon_proyection) for x, y in intervals]
+    center = np.mean(intervals_extended, axis=1)
+    l = float(np.abs(intervals_extended[0][1] - intervals_extended[0][0]))
+
+    # Compute the voronoi diagram
+    # node_list,vertex_list = jl.generate_voronoi_nodes_points(original_points, l, center, plot_voronoi)
+    node_list,vertex_list = jl.JuliaVoronoi(original_points, l, center, plot_voronoi)
+    
+    for i in iteration_range:
+        # if verbose:
+        #     ## Set description of the pbar
+        #     iteration_range.set_description("Processing iteration {} with intervals defining the space: {}".format(i+1, intervals))
+        
+        ## Add new point
+        # selected_vertex,volume_covered,vertex_covered_count = add_new_point_vectorized(finite_vor=finite_vor, vertices=vertices, distances=distances, dict_radios=dict_radios,probability=probability)
+        # selected_vertex_julia = jl.add_new_point_julia(node_list, vertex_list, distances, radius, probability)
+        selected_vertex_julia = jl.add_n_new_points_julia(node_list, vertex_list, distances, radius, probability,n)
+        selected_vertex_julia = np.array([vertex for vertex in selected_vertex_julia]).squeeze()
+        selected_vertex = np.array(selected_vertex_julia)
+        if n==1:
+            selected_vertex = proyection_hypercube(selected_vertex, vertices)
+        else:
+            selected_vertex = proyection_hypercube_vectorized(selected_vertex, vertices)
+
+        # Add the selected_vertex to originial_points
+        # FIXME: Es necesario hacer un transpose ya que para julia entran datos de dimension (dim,N) no (N,dim)
+        original_points_before = original_points.shape[0]
+        original_points = np.vstack((original_points, selected_vertex))
+
+        # Get only unique values
+        original_points = np.unique(original_points, axis=0)
+
+        # Check if the number of points remains the same
+        if original_points.shape[0] == original_points_before:
+            print("Warning: No new node can be added given the current precision.")
+            break
+
+        # Compute the voronoi diagram
+        try:
+            # node_list,vertex_list = jl.generate_voronoi_nodes_points(original_points, l, center, plot_voronoi)
+            node_list,vertex_list = jl.JuliaVoronoi(original_points, l, center, plot_voronoi)
+        except:
+            raise ValueError('Unable to generate the voronoi diagram')
+    
+        ## Add the new point to the inputs
+        inputs = torch.tensor(original_points, dtype=torch.float)
+        
+        
+        ## Compute the new radios for each point
+        if mode=='autograd':
+            # Raise an error if the autograd option is selected as it is deprecated
+            raise ValueError('The autograd option is deprecated')
+        elif mode=='neuralsens':
+            radius, _, x_reentrenamiento,no_points = get_lipschitz_radius_neuralsens(inputs=inputs, outputs=[], weights=weights, biases=biases, actfunc=actfunc, 
+                                                                                        global_lipschitz_constant=global_lipschitz_constant, 
+                                                                                        monotone_relation=monotone_relations, variable_index=variable_index, 
+                                                                                        n_variables=n_variables,epsilon_derivative=epsilon_derivative)
+
+       ## Check if the space is filled
+        # space_filled, distances = check_space_filled_vectorized(finite_vor, dict_radios, vertices)
+        space_filled, distances, _ = jl.check_space_filled_julia(node_list,radius,vertex_list)
+        ## Check if the space is filled and there are no points not satisfying the monotone relation
+        if space_filled and no_points:
+            print('The space is filled: {} after {} iterations. Intervals that define the space: {}'.format(space_filled, i+1, intervals))
+            return space_filled, x_reentrenamiento
+        elif x_reentrenamiento.shape[0]!=0 and not warning and not no_points:
+            print('The retraining set is not empty and therefore the space cannot be filled')
+            warning = True
+    
+    # Plot the final iteration 
+    if len(intervals) == 2:
+        # node_list,vertex_list = jl.generate_voronoi_nodes_points(original_points, l, center, True)
+        node_list,vertex_list = jl.JuliaVoronoi(original_points, l, center, True)
+
+
+    return space_filled, x_reentrenamiento
+
+def find_missing_elements(subset_array, full_array, tol=1e-5):
+    """
+    Given a subset_array and a full_array (both as NumPy arrays), 
+    returns the elements in full_array that are not in subset_array, 
+    considering elements equal if they are closer than a given tolerance.
+
+    Args:
+        subset_array (numpy.ndarray): A subset of full_array.
+        full_array (numpy.ndarray): The full array containing all elements.
+        tol (float): Tolerance for considering elements as equal. Default is 1e-5.
+
+    Returns:
+        numpy.ndarray: Elements in full_array that are not in subset_array.
+    """
+
+    # Ensure the arrays are 2D for consistent processing
+    if subset_array.ndim == 1:
+        subset_array = subset_array.reshape(-1, 1)
+    if full_array.ndim == 1:
+        full_array = full_array.reshape(-1, 1)
+    
+    # Initialize a list to store missing elements
+    missing_elements = []
+
+    # Iterate over each element in full_array
+    for full_elem in full_array:
+        # Check if there is any element in subset_array that is close to full_elem
+        if not np.any(np.all(np.abs(subset_array - full_elem) < tol, axis=1)):
+            missing_elements.append(full_elem)
+    
+    # Convert the result back to a NumPy array
+    result = np.array(missing_elements)
+    
+    return result
 
 def plot_finite_voronoi_2D(vor, all_points, original_points, radios, boundary, derivative_sign, plot_symmetric_points=False):
     """
