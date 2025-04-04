@@ -34,7 +34,7 @@ def write_yaml(file_path, data):
     with open(file_path, 'w') as file:
         yaml.dump(data, file, default_flow_style=False)
 
-def train(config, external_points=None, model=None):
+def train(config, external_points=None, model=None, regression=True):
     """
     Train the neural network model based on the provided configuration.
 
@@ -73,10 +73,17 @@ def train(config, external_points=None, model=None):
 
     if config['model_architecture']['actfunc'][0] != 'identity':
         config['model_architecture']['actfunc'].insert(0, 'identity')
-    if config['model_architecture']['actfunc'][-1] != 'identity':
+    if config['model_architecture']['actfunc'][-1] != 'identity' and regression:
         config['model_architecture']['actfunc'].append('identity')
+    elif config['model_architecture']['actfunc'][-1] != 'sigmoid' and not regression:
+        config['model_architecture']['actfunc'].append('sigmoid')
 
-    criterion = nn.MSELoss()
+    ## TODO: Generalize for regression and classification and multi output
+    if regression:
+        criterion = nn.MSELoss()
+    else:
+        criterion = nn.BCELoss()
+
     mlp_model = MonoNN(_model_name="Prueba", _model=model)
 
     eps = config['training']['epsilon'] if config['training']['epsilon'] is not None else 0.0
@@ -88,7 +95,8 @@ def train(config, external_points=None, model=None):
                                  delta=config['training']['delta'], patience=config['training']['patience'],
                                  delta_synthetic=config['training']['delta_synthetic'], delta_external=config['training']['delta_external'],
                                  std_growth=config['training']['std_growth'], epsilon_synthetic=config['training']['epsilon_synthetic'],
-                                 model_path='./Models/checkpoint_mlp_', external_points=external_points, seed=2023, _early_stopping=config['training']['early_stopping'])
+                                 model_path='./Models/checkpoint_mlp_', external_points=external_points, seed=2023,
+                                _early_stopping=config['training']['early_stopping'], delta_early_stopping=config['training']['delta_early_stopping']) 
 
 
     if config['training']['plot_history']:
