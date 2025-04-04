@@ -24,7 +24,11 @@ class EarlyStopping:
         self.counter = 0
         self.best_score = None
         self.early_stop = False
-        self.val_loss_min = np.Inf
+        try:
+            self.val_loss_min = np.Inf
+        except:
+            # For numpy>2.0.0
+            self.val_loss_min = np.inf
         self.delta = delta
         self.path = path
         self.trace_func = trace_func
@@ -40,7 +44,9 @@ class EarlyStopping:
             self.save_checkpoint(val_loss, other_loss, model)
             # And save the current model as a checkpoint.
 
-        elif score < self.best_score + self.delta or other_loss > 0:
+        # elif score < self.best_score + self.delta or other_loss > 0:
+        # Fix: Correct error_loss error
+        elif score < self.best_score + self.delta:
             # If the current score is not significantly better than the best score (i.e., the improvement is less than delta)
             # or if the other loss is greater than 0,
             self.counter += 1
@@ -57,13 +63,14 @@ class EarlyStopping:
                 # set the early stopping flag to True, indicating that training should be stopped.
 
         else:
-            # If the current score is significantly better than the best score and the other loss is not greater than 0,
-            self.best_score = score
-            # update the best score to the current score,
-            self.save_checkpoint(val_loss, other_loss, model)
-            # save the current model as a checkpoint,
-            self.counter = 0
-            # and reset the counter.
+            if other_loss==0:
+                # If the current score is significantly better than the best score and the other loss is not greater than 0,
+                self.best_score = score
+                # update the best score to the current score,
+                self.save_checkpoint(val_loss, other_loss, model)
+                # save the current model as a checkpoint,
+                self.counter = 0
+                # and reset the counter.
     def save_checkpoint(self, val_loss, other_loss, model):
         '''Saves model when validation loss decrease.'''
         if self.verbose == 2:
