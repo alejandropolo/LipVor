@@ -101,8 +101,6 @@ def LipVorMonotoneCertification(
             if len(sub_points) == 0:
                 continue
             sub_points = np.unique(sub_points, axis=0).astype(np.float64)
-            # TODO: Delete this line or understand why is it neccesary this rounding
-            # sub_points = np.round(sub_points, 3).astype(np.float64)
             inputs = torch.tensor(original_points[mask], dtype=torch.float)
 
             # Generate hypercube vertices for both the original intervals and the extended intervals
