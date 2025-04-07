@@ -23,3 +23,6 @@ Scripts_backup/
 
 # Ignore Results directory
 Results/
+
+# Ignore Models directory   
+Notebooks/Models/
