@@ -10,7 +10,7 @@ from torch.autograd import grad
 from torch.autograd.functional import hessian
 
 
-def print_errors(model, X_train_tensor, y_train_tensor, X_val_tensor, y_val_tensor, X_test_tensor, y_test_tensor, log=False, config=None):
+def print_errors(model, X_train_tensor, y_train_tensor, X_val_tensor, y_val_tensor, X_test_tensor, y_test_tensor, log=False, config=None, output_scaler=None):
     """
     Print the Mean Squared Error (MSE), Root Mean Squared Error (RMSE), Mean Absolute Error (MAE), and R-squared (R2) for training, validation, and test sets.
 
@@ -23,6 +23,7 @@ def print_errors(model, X_train_tensor, y_train_tensor, X_val_tensor, y_val_tens
         X_test_tensor (torch.Tensor): Test input tensor.
         y_test_tensor (torch.Tensor): Test target tensor.
         log (bool, optional): Whether to log the results. Defaults to False.
+        output_scaler (sklearn.preprocessing.StandardScaler, optional): Scaler used to inverse transform the outputs. Defaults to None.
         config (dict, optional): Configuration dictionary. Defaults to None.
 
     Returns:
@@ -39,6 +40,16 @@ def print_errors(model, X_train_tensor, y_train_tensor, X_val_tensor, y_val_tens
     y_train_pred = model(X_train_tensor)
     y_test_pred = model(X_test_tensor)
     y_val_pred = model(X_val_tensor)
+
+    if output_scaler is not None:
+        y_train_tensor = torch.tensor(output_scaler.inverse_transform(y_train_tensor.cpu().numpy())).to(device)
+        y_test_tensor = torch.tensor(output_scaler.inverse_transform(y_test_tensor.cpu().numpy())).to(device)
+        y_val_tensor = torch.tensor(output_scaler.inverse_transform(y_val_tensor.cpu().numpy())).to(device)
+        y_train_pred = torch.tensor(output_scaler.inverse_transform(y_train_pred.detach().cpu().numpy())).to(device)
+        y_test_pred = torch.tensor(output_scaler.inverse_transform(y_test_pred.detach().cpu().numpy())).to(device)
+        y_val_pred = torch.tensor(output_scaler.inverse_transform(y_val_pred.detach().cpu().numpy())).to(device)
+
+    
     mse_train = torch.mean((y_train_tensor - y_train_pred)**2)
     mse_test = torch.mean((y_test_tensor - y_test_pred)**2)
     mse_val = torch.mean((y_val_tensor - y_val_pred)**2)
