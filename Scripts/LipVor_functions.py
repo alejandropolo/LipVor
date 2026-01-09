@@ -11,13 +11,15 @@ from tqdm import tqdm
 from neuralsens import partial_derivatives as ns
 from neuralsens.partial_derivatives import calculate_second_partial_derivatives_mlp,calculate_first_partial_derivatives_mlp
 from scipy.spatial import ConvexHull
-
+from itertools import product
 
 
 
 # Load Julia
 try:
     from juliacall import Main as jl
+    # jl.include("../Scripts//JuliaSrc/VorFunctions.jl")
+    # jl.include("../JuliaOpt/VorFunctions.jl")
     jl.include("../Scripts//JuliaSrc/VorFunctions.jl")
 except:
     import warnings
@@ -317,6 +319,16 @@ def proyection_hypercube_vectorized(points, hypercube):
 
 ############################### ADD SYMMETRIC POINTS
 
+def add_one_symmetric_point(point,vertices,intervals):
+
+    ## Extract faces of the hypercube
+    faces = extract_hypercube_faces(vertices,intervals)
+
+    symmetric_points = calculate_symmetric_points_faces(point, faces)
+
+    return np.array(symmetric_points).reshape(-1, vertices.shape[1])
+
+
 def add_symmetric_points(vor,vertices,intervals):
 
     ## Extract faces of the hypercube
@@ -336,6 +348,7 @@ def add_symmetric_points(vor,vertices,intervals):
         ### Si no están dentro del hipercubo, se añaden puntos simétricos
         else:
             region_vertices = vor.vertices[region]
+            ## TODO: Hay que quitar el -1 de region_vertices
             if not is_inside_hypercube(region_vertices,vertices): ########################## CHEQUEAR QUE FUNCIONA BIEN CUANDO EN VEZ DE UN PUNTO SE PASAN MULTIPLES PUNTOS
                 symmetric_points = calculate_symmetric_points_faces(vor.points[i], faces)
                 symmetric_points_list.append(symmetric_points)
@@ -555,6 +568,7 @@ def get_lipschitz_radius_neuralsens(inputs, outputs, weights, biases, actfunc, g
             derivative = torch.tensor(der.flatten()).float()[variable_index]
             if not (derivative == 0).any() and not torch.sum(torch.relu(-monotone_relation * derivative)) > 0:
                 if torch.min(monotone_relation * derivative).item() < epsilon_derivative:
+                    no_points = False  ## There is at least one point not satisfying the monotone relation
                     x_reentrenamiento = torch.cat((x_reentrenamiento, x.reshape(-1, n_variables)), dim=0)
 
     return radius_tot, dict_radios, x_reentrenamiento, no_points
@@ -642,6 +656,7 @@ def add_new_point_vectorized(finite_vor, vertices, distances, dict_radios, proba
             
             ##Project the points inside the hypercube
             #region_vertices = proyection_hypercube_vectorized(region_vertices, vertices)
+            ## TODO: If verbose do not compute the volume
             volume = compute_polytope_volume(region_vertices) 
             volume_covered += volume
 
@@ -652,112 +667,262 @@ def add_new_point_vectorized(finite_vor, vertices, distances, dict_radios, proba
     return selected_vertex, volume_covered, vertex_covered_count  # Return the counter along with the selected vertex
 
 def LipVor(original_vor, original_points, finite_vor, dict_radios, vertices, distances, 
-                          model,actfunc, global_lipschitz_constant, intervals,monotone_relations,variable_index,
-                          n_variables, epsilon_derivative, probability, mode='neuralsens',plot_voronoi=False, epsilon=1e-5, max_iterations=10, verbose=0):
+           model, actfunc, global_lipschitz_constant, intervals, monotone_relations, variable_index,
+           n_variables, epsilon_derivative, probability, mode='neuralsens', plot_voronoi=False, 
+           epsilon=1e-5, max_iterations=10, verbose=0,
+           categorical_indices=None, categorical_values=None):
     """
-    Add points to a Voronoi diagram using the furthest vertex for each point.
-
-    Args:
-        original_vor (scipy.spatial.Voronoi): The original Voronoi diagram.
-        original_points (numpy.ndarray): The original points in the Voronoi diagram.
-        finite_vor (scipy.spatial.Voronoi): The finite Voronoi diagram (with the added symmetric points)
-        vertices (numpy.ndarray): The vertices defining the hypercube.
-        distances (dict): The distances for each point in the Voronoi diagram.
-        model (torch.nn.Module): The trained model.
-        global_lipschitz_constant (float): The global Lipschitz constant.
-        x_lim (tuple): The x-axis limits of the hypercube.
-        y_lim (tuple): The y-axis limits of the hypercube.
-        monotone_relations (list): The monotone relations for each variable.
-        variable_index (list): The indices of the variables to compute the local Lipschitz constant.
-        n_variables (int): The number of variables.
-        plot_voronoi (bool, optional): Whether to plot each Voronoi diagram. Defaults to False.
-        epsilon (float, optional): The extension of the hypercube. Defaults to 1e-5. It is needed to compute symmetric points on the boundary.
-        max_iterations (int, optional): The maximum number of iterations. Defaults to 10.
-
-    Returns:
-        numpy.ndarray: The updated original points in the Voronoi diagram.
+    Modified to handle categorical variables without helper functions
     """
-    intervals_extended = [(x - epsilon, y + epsilon) for x, y in intervals]
-    vertices_extended = generate_hypercube_vertices(intervals_extended)
-
-    ## Boolean warning to print if there are points not following the monotone relation
-    warning = False
-    
-    if mode == 'neuralsens':
-    #     # print('Using NeuralSens')
-        weights, biases = get_weights_and_biases(model)
-    elif mode == 'autograd':
-        print('Using autograd')
+    # Validate categorical monotonic constraints
+    if categorical_indices:
+        categorical_indices = list(categorical_indices)
+        if any(idx in categorical_indices for idx in variable_index):
+            raise ValueError("Monotonic relationships cannot be imposed on categorical variables")
+        numeric_indices = [i for i in range(original_points.shape[1]) if i not in categorical_indices]
     else:
-        raise ValueError('The mode must be either autograd or neuralsens')
-    
-    iteration_range = range(max_iterations)
-    if verbose:
-        iteration_range = tqdm(iteration_range, desc="Processing iterations")
-    
-    for i in iteration_range:
-        if verbose:
-            ## Set description of the pbar
-            iteration_range.set_description("Processing iteration {} with intervals defining the space: {}".format(i+1, intervals))
+        numeric_indices = list(range(original_points.shape[1]))
+
+    if categorical_indices and categorical_values:
+        all_space_filled = True
+        all_x_reent = None
+        intervals_extended = [(x - epsilon, y + epsilon) for x, y in intervals]
+        vertices_extended = generate_hypercube_vertices(intervals_extended)
+
+        ## Boolean warning to print if there are points not following the monotone relation
+        warning = False
+
+        # Process each categorical combination
+        # TODO: En realidad cuando LipVorMonotoneCertificaiton ya le pasa los datos filtrados por solo una de estas categorías luego no necesitaría hacer este for
+        for combo in product(*[categorical_values[i] for i in categorical_indices]):
+            # ==================================================================
+            # Categorical Subspace Setup
+            # ==================================================================
+            mask = np.ones(len(original_points), dtype=bool)
+            for cidx, cval in zip(categorical_indices, combo):
+                mask &= (original_points[:, cidx] == cval)
+            sub_points = original_points[mask]
+            
+            if len(sub_points) == 0:
+                continue  # Skip empty subspaces
+                
+            # Extract numerical components
+            numeric_points = sub_points[:, numeric_indices]
+            numeric_points = np.unique(numeric_points, axis=0)
+            if len(numeric_points) == 0:
+                continue
+
+
+            # Initialize subspace Voronoi
+            # sub_vor = Voronoi(numeric_points, incremental=True)
+            # sub_all_points, _ = add_symmetric_points(
+            #     sub_vor, 
+            #     vertices_extended,
+            #     intervals
+            # )
+            # finite_vor = Voronoi(sub_all_points, incremental=True, qhull_options="Q12 QJ Qs Qc Qx")
+            
+            # Initialize subspace variables
+            # subspace_filled = False
+            # dict_radios = {}
+            # sub_distances = {}
+            # warning = False
+            
+            if mode == 'neuralsens':
+                weights, biases = get_weights_and_biases(model)
+
+            # ==================================================================
+            # Main Processing Loop (Modified for Subspace)
+            # ==================================================================
+            iteration_range = range(max_iterations)
+            if verbose:
+                iteration_range = tqdm(iteration_range, desc="Processing iterations")
+            for i in iteration_range:
+                # Add new point
+                selected_vertex, _, _ = add_new_point_vectorized(
+                    finite_vor=finite_vor,
+                    vertices=vertices,
+                    distances=distances,
+                    dict_radios=dict_radios,
+                    probability=probability
+                )
+                
+                # Project to hypercube
+                selected_vertex = proyection_hypercube(selected_vertex, vertices)
+                if np.any(np.all(np.isclose(numeric_points, selected_vertex, rtol=1e-05), axis=1)):
+                    print('The selected vertex is already in the original points and the vertex is {}'.format(selected_vertex))
+                    break
+                else:
+                    # Update points and Voronoi
+                    numeric_points = np.vstack((numeric_points, selected_vertex))
+                
+                # Add in the the value of the combo to the selected vertex and add to the original points
+                ## TODO: Verificar que esto está funcionando bien
+                old_count = original_points.shape[0]
+
+                ## TODO: Revisar que funciona bien
+                # selected_vertex_expanded = np.concatenate([selected_vertex, np.array(combo)])
+                selected_vertex_expanded = np.zeros(original_points.shape[1])
+                selected_vertex_expanded[numeric_indices] = selected_vertex
+                for cidx, cval in zip(categorical_indices, combo):
+                    selected_vertex_expanded[cidx] = cval
+                original_points = np.vstack((original_points, selected_vertex_expanded))
+
+                new_count = original_points.shape[0]
+                assert new_count - old_count == 1, "Exactly one point must be added."
+
+                # Add to the mask the new point
+                mask = np.ones(len(original_points), dtype=bool)
+                for cidx, cval in zip(categorical_indices, combo):
+                    mask &= (original_points[:, cidx] == cval)
+                sub_points = original_points[mask]
+
+
+                # Add the new point to the Voronoi diagram
+                original_vor.add_points(selected_vertex.reshape(1, -1))
+                sub_all_points, _ = add_symmetric_points(
+                    original_vor, 
+                    vertices_extended,
+                    intervals_extended
+                )
+                finite_vor = Voronoi(sub_all_points, incremental=True, qhull_options="Q12 QJ Qs Qc Qx")
+                
+                # Compute Lipschitz radii
+                inputs = torch.tensor(original_points[mask], dtype=torch.float)
+                if mode=='autograd':
+                    # Raise an error if the autograd option is selected as it is deprecated
+                    raise ValueError('The autograd option is deprecated')
+                elif mode == 'neuralsens':
+                    sub_radius_tot, dict_radios, x_reent, no_points = get_lipschitz_radius_neuralsens(
+                        inputs=inputs, outputs=[], weights=weights, biases=biases,
+                        actfunc=actfunc, global_lipschitz_constant=global_lipschitz_constant,
+                        monotone_relation=monotone_relations, variable_index=variable_index,
+                        n_variables=n_variables, epsilon_derivative=epsilon_derivative
+                    )
+                
+                # Plot in the 2D case
+                derivative_sign = [v[1] for _, v in dict_radios.items()]
+            
+
+                # Check coverage
+                subspace_filled, distances = check_space_filled_vectorized(
+                    finite_vor, dict_radios, vertices
+                )
+                if subspace_filled and no_points:
+                    # print('The space is filled: {} after {} iterations for combo {}. Intervals that define the space: {}'.format(
+                    #     subspace_filled, i+1, combo, intervals))
+                    break
+            if len(intervals) == 2:
+                # Print the combo 
+                print('Combo: {}'.format(combo))
+                plot_finite_voronoi_2D(
+                    vor=finite_vor, 
+                    all_points=finite_vor.points, 
+                    original_points=original_points, 
+                    radios=sub_radius_tot, boundary=vertices, 
+                    derivative_sign=derivative_sign, plot_symmetric_points=False)
+                    
+
+            # ==================================================================
+            # Reconstruct Full-Dimensional Points
+            # ==================================================================
+            if x_reent is not None and x_reent.shape[0] > 0:
+                if not torch.is_tensor(x_reent):
+                    x_reent = torch.tensor(x_reent, dtype=torch.float)
+                if all_x_reent is None or all_x_reent.numel() == 0:
+                    all_x_reent = x_reent
+                else:
+                    all_x_reent = torch.cat((all_x_reent, x_reent), dim=0)
+
+            all_space_filled &= subspace_filled
+
+        return all_space_filled, all_x_reent
+
+    else:
+        intervals_extended = [(x - epsilon, y + epsilon) for x, y in intervals]
+        vertices_extended = generate_hypercube_vertices(intervals_extended)
+
+        ## Boolean warning to print if there are points not following the monotone relation
+        warning = False
         
-        ## Add new point
-        selected_vertex,volume_covered,vertex_covered_count = add_new_point_vectorized(finite_vor=finite_vor, vertices=vertices, distances=distances, dict_radios=dict_radios,probability=probability)
-        
-        if verbose:
-            ## Show in the pbar the number of vertex covered out of the total number of vertices
-            percentage_covered = (vertex_covered_count / len(distances)) * 100
-            percentage_volume_covered = (volume_covered / compute_polytope_volume(vertices_extended)) * 100
-            iteration_range.set_postfix({'Percentage of vertex covered': f'{percentage_covered:.2f}%', 'Percentage of Volume Verified': f'{percentage_volume_covered:.2f}%'})
-        
-        ## Project the new point to the hypercube (because of the extension it may be outside the hypercube)
-        selected_vertex = proyection_hypercube(selected_vertex, vertices)
-        ## Checks if selected vertex is already in the original points
-        ## In that case the loop has to stop because the dictionary cannot have two arrays with the same key
-        if np.any(np.all(np.isclose(original_points, selected_vertex,rtol=1e-05), axis=1)):
-            print('The selected vertex is already in the original points and the vertex is {}'.format(selected_vertex))
-            break
+        if mode == 'neuralsens':
+        #     # print('Using NeuralSens')
+            weights, biases = get_weights_and_biases(model)
+        elif mode == 'autograd':
+            print('Using autograd')
         else:
-            ## Add the new point to the original points
-            original_points = np.vstack((original_points, selected_vertex))
-        ## Add the new point to the inputs
-        inputs = torch.tensor(original_points, dtype=torch.float)
+            raise ValueError('The mode must be either autograd or neuralsens')
         
-        # # Add the new point to the Voronoi diagram
-        original_vor.add_points(selected_vertex.reshape(1, -1))
-        # Compute the new finite Voronoi diagram with the new point
-        # FIXME: Corregir para que no se necesite utilizar el original_vor si no que se calculen los simétricos para todos los puntos
-        all_points, _ = add_symmetric_points(original_vor, vertices_extended, intervals_extended)
-
-        finite_vor = Voronoi(all_points, incremental=True,qhull_options="Q12 QJ Qs Qc Qx")
+        iteration_range = range(max_iterations)
+        if verbose:
+            iteration_range = tqdm(iteration_range, desc="Processing iterations")
         
-        ## Compute the new radios for each point
-        if mode=='autograd':
-            # Raise an error if the autograd option is selected as it is deprecated
-            raise ValueError('The autograd option is deprecated')
-        elif mode=='neuralsens':
-            radius_tot, dict_radios, x_reentrenamiento,no_points = get_lipschitz_radius_neuralsens(inputs=inputs, outputs=[], weights=weights, biases=biases, actfunc=actfunc, 
-                                                                                        global_lipschitz_constant=global_lipschitz_constant, 
-                                                                                        monotone_relation=monotone_relations, variable_index=variable_index, 
-                                                                                        n_variables=n_variables,epsilon_derivative=epsilon_derivative)
+        for i in iteration_range:
+            if verbose:
+                ## Set description of the pbar
+                iteration_range.set_description("Processing iteration {} with intervals defining the space: {}".format(i+1, intervals))
+            
+            ## Add new point
+            selected_vertex,volume_covered,vertex_covered_count = add_new_point_vectorized(
+                finite_vor=finite_vor, vertices=vertices, distances=distances, 
+                dict_radios=dict_radios,probability=probability
+                )
+            
+            if verbose:
+                ## Show in the pbar the number of vertex covered out of the total number of vertices
+                percentage_covered = (vertex_covered_count / len(distances)) * 100
+                percentage_volume_covered = (volume_covered / compute_polytope_volume(vertices_extended)) * 100
+                iteration_range.set_postfix({'Percentage of vertex covered': f'{percentage_covered:.2f}%', 'Percentage of Volume Verified': f'{percentage_volume_covered:.2f}%'})
+            
+            ## Project the new point to the hypercube (because of the extension it may be outside the hypercube)
+            selected_vertex = proyection_hypercube(selected_vertex, vertices)
+            ## Checks if selected vertex is already in the original points
+            ## In that case the loop has to stop because the dictionary cannot have two arrays with the same key
+            if np.any(np.all(np.isclose(original_points, selected_vertex,rtol=1e-05), axis=1)):
+                print('The selected vertex is already in the original points and the vertex is {}'.format(selected_vertex))
+                break
+            else:
+                ## Add the new point to the original points
+                original_points = np.vstack((original_points, selected_vertex))
+            ## Add the new point to the inputs
+            inputs = torch.tensor(original_points, dtype=torch.float)
+            
+            # # Add the new point to the Voronoi diagram
+            original_vor.add_points(selected_vertex.reshape(1, -1))
+            # Compute the new finite Voronoi diagram with the new point
+            # FIXME: Corregir para que no se necesite utilizar el original_vor si no que se calculen los simétricos para todos los puntos
+            all_points, _ = add_symmetric_points(original_vor, vertices_extended, intervals_extended)
 
-        derivative_sign = [v[1] for _, v in dict_radios.items()]
-        ## Plot Voronoi diagram
-        if plot_voronoi and len(intervals) == 2:
+            finite_vor = Voronoi(all_points, incremental=True,qhull_options="Q12 QJ Qs Qc Qx")
+            
+            ## Compute the new radios for each point
+            if mode=='autograd':
+                # Raise an error if the autograd option is selected as it is deprecated
+                raise ValueError('The autograd option is deprecated')
+            elif mode=='neuralsens':
+                radius_tot, dict_radios, x_reentrenamiento,no_points = get_lipschitz_radius_neuralsens(inputs=inputs, outputs=[], weights=weights, biases=biases, actfunc=actfunc, 
+                                                                                            global_lipschitz_constant=global_lipschitz_constant, 
+                                                                                            monotone_relation=monotone_relations, variable_index=variable_index, 
+                                                                                            n_variables=n_variables,epsilon_derivative=epsilon_derivative)
+
+            derivative_sign = [v[1] for _, v in dict_radios.items()]
+            ## Plot Voronoi diagram
+            if plot_voronoi and len(intervals) == 2:
+                plot_finite_voronoi_2D(vor=finite_vor, all_points=finite_vor.points, original_points=original_points, radios=radius_tot, boundary=vertices, derivative_sign=derivative_sign, plot_symmetric_points=False)
+            ## Check if the space is filled
+            space_filled, distances = check_space_filled_vectorized(finite_vor, dict_radios, vertices)
+            ## Check if the space is filled and there are no points not satisfying the monotone relation
+            if space_filled and no_points:
+                # print('The space is filled: {} after {} iterations. Intervals that define the space: {}'.format(space_filled, i+1, intervals))
+                return space_filled, x_reentrenamiento
+            elif x_reentrenamiento.shape[0]!=0 and not warning and not no_points:
+                print('The retraining set is not empty and therefore the space cannot be filled')
+                warning = True
+
+        if len(intervals) == 2:
             plot_finite_voronoi_2D(vor=finite_vor, all_points=finite_vor.points, original_points=original_points, radios=radius_tot, boundary=vertices, derivative_sign=derivative_sign, plot_symmetric_points=False)
-        ## Check if the space is filled
-        space_filled, distances = check_space_filled_vectorized(finite_vor, dict_radios, vertices)
-        ## Check if the space is filled and there are no points not satisfying the monotone relation
-        if space_filled and no_points:
-            print('The space is filled: {} after {} iterations. Intervals that define the space: {}'.format(space_filled, i+1, intervals))
-            return space_filled, x_reentrenamiento
-        elif x_reentrenamiento.shape[0]!=0 and not warning and not no_points:
-            print('The retraining set is not empty and therefore the space cannot be filled')
-            warning = True
 
-    if len(intervals) == 2:
-        plot_finite_voronoi_2D(vor=finite_vor, all_points=finite_vor.points, original_points=original_points, radios=radius_tot, boundary=vertices, derivative_sign=derivative_sign, plot_symmetric_points=False)
-
-    return space_filled, x_reentrenamiento
+        return space_filled, x_reentrenamiento
 
 def LipVor_Julia(original_points, radius, distances, vertices,
                  model, actfunc, global_lipschitz_constant, intervals, monotone_relations, variable_index,
@@ -962,20 +1127,26 @@ def LipVor_Julia(original_points, radius, distances, vertices,
             iteration_range = tqdm(iteration_range, desc="Processing iterations")
 
         # Compute the center as the mid point of the intervals
+        # center = np.mean(intervals, axis=1)
+        # # Compute the lenght of the inverval (Asumming cuboid domains)
+        # # l = float(np.abs(intervals[0][1]-intervals[0][0]))
+        # l = np.float64(np.abs(intervals[0][1] - intervals[0][0]))*(1+1e-4)
         intervals_extended = [(x - epsilon_proyection, y + epsilon_proyection) for x, y in intervals]
         center = np.mean(intervals_extended, axis=1)
         l = float(np.abs(intervals_extended[0][1] - intervals_extended[0][0]))
 
         # Compute the voronoi diagram
+        # node_list,vertex_list = jl.generate_voronoi_nodes_points(original_points, l, center, plot_voronoi)
         node_list,vertex_list = jl.JuliaVoronoi(original_points, l, center, plot_voronoi)
         
         for i in iteration_range:
-            if verbose:
-                ## Set description of the pbar
-                iteration_range.set_description("Processing iteration {} with intervals defining the space: {}".format(i+1, intervals))
+            # if verbose:
+            #     ## Set description of the pbar
+            #     iteration_range.set_description("Processing iteration {} with intervals defining the space: {}".format(i+1, intervals))
             
             ## Add new point
-
+            # selected_vertex,volume_covered,vertex_covered_count = add_new_point_vectorized(finite_vor=finite_vor, vertices=vertices, distances=distances, dict_radios=dict_radios,probability=probability)
+            # selected_vertex_julia = jl.add_new_point_julia(node_list, vertex_list, distances, radius, probability)
             selected_vertex_julia = jl.add_n_new_points_julia(node_list, vertex_list, distances, radius, probability,n)
             selected_vertex_julia = np.array([vertex for vertex in selected_vertex_julia]).squeeze()
             selected_vertex = np.array(selected_vertex_julia)
@@ -984,6 +1155,7 @@ def LipVor_Julia(original_points, radius, distances, vertices,
             selected_vertex = proyection_hypercube_vectorized(selected_vertex, vertices)
 
             # Add the selected_vertex to originial_points
+            # FIXME: Es necesario hacer un transpose ya que para julia entran datos de dimension (dim,N) no (N,dim)
             original_points_before = original_points.shape[0]
             original_points = np.vstack((original_points, selected_vertex))
 
@@ -997,6 +1169,7 @@ def LipVor_Julia(original_points, radius, distances, vertices,
 
             # Compute the voronoi diagram
             try:
+                # node_list,vertex_list = jl.generate_voronoi_nodes_points(original_points, l, center, plot_voronoi)
                 node_list,vertex_list = jl.JuliaVoronoi(original_points, l, center, plot_voronoi)
             except:
                 raise ValueError('Unable to generate the voronoi diagram')
@@ -1016,10 +1189,11 @@ def LipVor_Julia(original_points, radius, distances, vertices,
                                                                                             n_variables=n_variables,epsilon_derivative=epsilon_derivative)
 
         ## Check if the space is filled
+            # space_filled, distances = check_space_filled_vectorized(finite_vor, dict_radios, vertices)
             space_filled, distances, _ = jl.check_space_filled_julia(node_list,radius,vertex_list)
             ## Check if the space is filled and there are no points not satisfying the monotone relation
             if space_filled and no_points:
-                print('The space is filled: {} after {} iterations. Intervals that define the space: {}'.format(space_filled, i+1, intervals))
+                # print('The space is filled: {} after {} iterations. Intervals that define the space: {}'.format(space_filled, i+1, intervals))
                 return space_filled, x_reentrenamiento
                 # i = max_iterations
             elif x_reentrenamiento.shape[0]!=0 and not warning and not no_points:
