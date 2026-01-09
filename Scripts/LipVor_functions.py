@@ -927,8 +927,8 @@ def LipVor_Julia(original_points, radius, distances, vertices,
                 # Check coverage
                 subspace_space_filled, distances, _ = jl.check_space_filled_julia(node_list, radius, vertex_list)
                 if subspace_space_filled and no_points:
-                    print('The space is filled: {} after {} iterations for combo {}. Intervals that define the space: {}'.format(
-                        subspace_space_filled, i+1, combo, intervals))
+                    # print('The space is filled: {} after {} iterations for combo {}. Intervals that define the space: {}'.format(
+                        # subspace_space_filled, i+1, combo, intervals))
                     break
 
             # Reconstruct full-dimensional retraining points (numeric + categorical)
